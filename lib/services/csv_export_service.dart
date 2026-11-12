@@ -42,19 +42,32 @@ class CsvExportService {
       name: 'conejos_cunitech_$marca',
       bytes: bytes,
       fileExtension: 'csv',
-      mimeType: MimeType.csv,
+      // Excel en espanol espera punto y coma y necesita el charset en el
+      // tipo MIME para abrir los acentos correctamente.
+      mimeType: MimeType.custom,
+      customMimeType: 'text/csv;charset=utf-8',
     );
 
     return rabbits.length;
   }
 
-  /// Construye el contenido CSV (con BOM para que Excel respete los acentos).
+  /// Construye el contenido CSV.
+  ///
+  /// - `;` como separador de columnas: en Excel en espanol la coma es el
+  ///   separador decimal, asi que con comas todas las columnas se amontonan
+  ///   en una sola.
+  /// - `\r\n` como salto de linea (el que espera Excel).
+  /// - BOM UTF-8 al principio para que reconozca los acentos y la enye.
   static String construirCsv(List<Rabbit> rabbits) {
     final filas = <List<dynamic>>[
       _columnas,
       for (final conejo in rabbits) _filaConejo(conejo),
     ];
-    return const CsvEncoder(addBom: true).convert(filas);
+    return const CsvEncoder(
+      addBom: true,
+      fieldDelimiter: ';',
+      lineDelimiter: '\r\n',
+    ).convert(filas);
   }
 
   static List<dynamic> _filaConejo(Rabbit conejo) {
