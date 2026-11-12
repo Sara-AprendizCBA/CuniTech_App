@@ -1,0 +1,1338 @@
+// lib/screens/main_screen.dart
+import 'package:flutter/material.dart';
+import 'package:get/get.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../core/theme/app_theme.dart';
+import '../core/theme/theme_controller.dart';
+import '../core/utils/app_snackbar.dart';
+import '../core/utils/responsive.dart';
+import '../core/widgets/app_loading.dart';
+import '../core/widgets/empty_state.dart';
+import '../controllers/auth_controller.dart';
+import '../controllers/notification_controller.dart';
+import '../widgets/insight_panel_dialog.dart';
+
+import 'dashboard/dashboard_screen.dart';
+import 'rabbits/rabbits_screen.dart';
+import 'feeding/feeding_screen.dart';
+import 'reproduction/reproduction_screen.dart';
+import 'salud/salud_screen.dart';
+import 'reports/reports_screen.dart';
+import 'admin/user_management_screen.dart';
+import 'auth/profile_screen.dart';
+import 'auth/settings_screen.dart';
+
+
+class MainScreen extends StatefulWidget {
+  final ThemeController themeController;
+  const MainScreen({super.key, required this.themeController});
+
+  @override
+  State<MainScreen> createState() => _MainScreenState();
+}
+
+class _MainScreenState extends State<MainScreen>
+    with SingleTickerProviderStateMixin {
+  int _currentIndex = 0;
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
+  final _mobileProfileKey = GlobalKey();
+  final AuthController authController = Get.find<AuthController>();
+  late final AnimationController _pulseController;
+  late final Animation<double> _pulseAnimation;
+  late final Animation<double> _softPulseAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..repeat(reverse: true);
+    _pulseAnimation = Tween<double>(begin: 0.85, end: 1.2).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+    // Version suave para cuando el orbe vive en la barra superior.
+    _softPulseAnimation = Tween<double>(begin: 0.94, end: 1.06).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  final List<Map<String, dynamic>> _navItems = [
+    {
+      'icon': Icons.home_outlined,
+      'label': 'Inicio',
+      'screen': const DashboardScreen(),
+      'roles': const ['admin', 'veterinario', 'ayudante', 'usuario'],
+    },
+    {
+      'icon': Icons.pets_outlined,
+      'label': 'Conejos',
+      'screen': const RabbitsScreen(),
+      'roles': const ['admin', 'veterinario', 'ayudante', 'usuario'],
+    },
+    {
+      'icon': Icons.restaurant_outlined,
+      'label': 'Alimentacion',
+      'screen': const FeedingScreen(),
+      'roles': const ['admin', 'veterinario', 'ayudante', 'usuario'],
+    },
+    {
+      'icon': Icons.favorite_border,
+      'label': 'Reproduccion',
+      'screen': const ReproductionScreen(),
+      'roles': const ['admin', 'veterinario', 'ayudante'],
+    },
+    {
+      'icon': Icons.health_and_safety_outlined,
+      'label': 'Salud',
+      'screen': const SaludScreen(),
+      'roles': const ['admin', 'veterinario', 'ayudante', 'usuario'],
+    },
+    {
+      'icon': Icons.analytics_outlined,
+      'label': 'Reportes',
+      'screen': const ReportsScreen(),
+      'roles': const ['admin', 'veterinario'],
+    },
+    {
+      'icon': Icons.people_alt_rounded,
+      'label': 'Usuarios',
+      'screen': const UserManagementScreen(),
+      'roles': const ['admin'],
+    },
+  ];
+
+  // ==================== HELPERS DE ROL ====================
+  List<Map<String, dynamic>> _visibleItems(AuthController auth) {
+    return _navItems.where((item) {
+      final roles = item['roles'] as List<String>? ?? const [];
+      return roles.contains(auth.currentRol.value);
+    }).toList();
+  }
+
+  String _rolLabel(String rol) => switch (rol) {
+        'admin' => 'Admin',
+        'veterinario' => 'Veterinario',
+        'ayudante' => 'Ayudante',
+        _ => 'Usuario',
+      };
+
+  String _initials(String? nombre) {
+    final n = (nombre ?? '').trim();
+    if (n.isEmpty) return '?';
+    final parts = n.split(RegExp(r'\s+'));
+    if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
+    return (parts[0].substring(0, 1) + parts[1].substring(0, 1)).toUpperCase();
+  }
+
+  // ==================== HELPERS DE TEMA ====================
+  Color _surfaceColor(BuildContext context) =>
+      Theme.of(context).cardTheme.color ??
+      Theme.of(context).colorScheme.surface;
+
+  Color _borderColor(BuildContext context) =>
+      Theme.of(context).dividerTheme.color ??
+      Theme.of(context).colorScheme.outline;
+
+  Color? _secondaryTextColor(BuildContext context) =>
+      Theme.of(context).textTheme.bodySmall?.color ??
+      Theme.of(context).textTheme.bodyMedium?.color;
+
+  Color? _primaryTextColor(BuildContext context) =>
+      Theme.of(context).textTheme.bodyLarge?.color ??
+      Theme.of(context).textTheme.titleMedium?.color;
+
+  Widget _buildSectionTitle(BuildContext context, String title) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(6, 4, 6, 8),
+      child: Text(
+        title,
+        style: TextStyle(
+          fontSize: 12,
+          letterSpacing: 1.2,
+          fontWeight: FontWeight.w700,
+          color: _secondaryTextColor(context)?.withValues(alpha: 0.6),
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildGroupedNavItems(
+    List<Map<String, dynamic>> items,
+    int currentIndex,
+    BuildContext context,
+    ThemeData theme, {
+    required int startIndex,
+    required int count,
+  }) {
+    final widgets = <Widget>[];
+    for (int i = startIndex; i < startIndex + count && i < items.length; i++) {
+      final item = items[i];
+      final isSelected = currentIndex == i;
+      widgets.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              hoverColor: AppTheme.accent.withValues(alpha: 0.07),
+              splashColor: AppTheme.accent.withValues(alpha: 0.10),
+              onTap: () => setState(() => _currentIndex = i),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOutCubic,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? AppTheme.accent.withValues(alpha: 0.12)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      item['icon'] as IconData,
+                      color: isSelected
+                          ? AppTheme.accent
+                          : _secondaryTextColor(context),
+                      size: 22,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        item['label'] as String,
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                          color: isSelected
+                              ? AppTheme.accent
+                              : _primaryTextColor(context),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return widgets;
+  }
+
+  Widget _buildAccountNavItem(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          hoverColor: AppTheme.accent.withValues(alpha: 0.07),
+          splashColor: AppTheme.accent.withValues(alpha: 0.10),
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  icon,
+                  color: _secondaryTextColor(context),
+                  size: 22,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                      color: _primaryTextColor(context),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ==================== CERRAR SESIóN ====================
+  Future<void> _logout() async {
+    final confirmado = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cerrar sesion'),
+        content: const Text(
+          'Â¿EstÃ¡s seguro de que deseas cerrar sesion?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Cerrar sesion'),
+          ),
+        ],
+      ),
+    );
+    if (confirmado != true) return;
+
+    try {
+      await Supabase.instance.client.auth.signOut();
+    } catch (e) {
+      if (mounted) {
+        AppSnackbar.error(context, 'Error al cerrar sesion: $e');
+      }
+      return;
+    }
+
+    await Get.deleteAll();
+
+    if (!mounted) return;
+    Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+  }
+
+  String _formatNotificationTime(DateTime timestamp) {
+    final now = DateTime.now();
+    final diff = now.difference(timestamp);
+    if (diff.inMinutes < 1) return 'Ahora';
+    if (diff.inMinutes < 60) return 'Hace ${diff.inMinutes} min';
+    if (diff.inHours < 24) return 'Hace ${diff.inHours} h';
+    if (diff.inDays < 7) return 'Hace ${diff.inDays} d';
+    return '${timestamp.day}/${timestamp.month}/${timestamp.year}';
+  }
+
+  void _showNotificationsPanel(BuildContext context, {RenderBox? anchor}) {
+    final notifCtrl = Get.find<NotificationController>();
+    showDialog(
+      context: context,
+      barrierColor: Colors.transparent,
+      useSafeArea: false,
+      builder: (context) {
+        final theme = Theme.of(context);
+        final screenWidth = MediaQuery.of(context).size.width;
+
+        double? panelTop;
+        double? panelRight;
+        if (anchor != null && anchor.hasSize) {
+          final origin = anchor.localToGlobal(Offset.zero);
+          panelTop = origin.dy + anchor.size.height + 8;
+          panelRight = screenWidth - origin.dx - anchor.size.width - 8;
+        }
+
+        return Stack(
+          children: [
+            Positioned(
+              top: panelTop ?? 70,
+              right: panelRight ?? 20,
+              child: Material(
+                elevation: 10,
+                borderRadius: BorderRadius.circular(16),
+                clipBehavior: Clip.antiAlias,
+                color: theme.cardColor,
+                child: SizedBox(
+                  width: 350,
+                  height: 400,
+                  child: Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Notificaciones',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.close, size: 20),
+                              onPressed: () => Navigator.pop(context),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Divider(height: 1),
+                      Expanded(
+                        child: Obx(() {
+                          final items = notifCtrl.notifications;
+                          if (items.isEmpty) {
+                            return const EmptyStateWidget(
+                              icon: Icons.notifications_off_outlined,
+                              iconSize: 32,
+                              maxWidth: 260,
+                              title: 'Sin notificaciones',
+                              subtitle:
+                                  'Los avisos de tu criadero aparecerán aquí.',
+                            );
+                          }
+                          return ListView.builder(
+                            padding:
+                                const EdgeInsets.symmetric(vertical: 8),
+                            itemCount:
+                                items.length > 5 ? 5 : items.length,
+                            itemBuilder: (context, index) {
+                              final item = items[index];
+                              final icon = switch (item.type) {
+                                AppNotificationType.health =>
+                                  Icons.health_and_safety_outlined,
+                                AppNotificationType.reproduction =>
+                                  Icons.favorite_border_rounded,
+                                AppNotificationType.feeding =>
+                                  Icons.restaurant_outlined,
+                                AppNotificationType.general =>
+                                  Icons.notifications_active_outlined,
+                              };
+                              return ListTile(
+                                dense: true,
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 4,
+                                ),
+                                leading: Container(
+                                  width: 36,
+                                  height: 36,
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.accent
+                                        .withValues(alpha: 0.1),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Icon(icon,
+                                      size: 18, color: AppTheme.accent),
+                                ),
+                                title: Text(
+                                  item.title,
+                                  style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600),
+                                ),
+                                subtitle: Text(
+                                  item.subtitle,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                                trailing: Text(
+                                  _formatNotificationTime(item.timestamp),
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              );
+                            },
+                          );
+                        }),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // Ir a Perfil
+  void _goToProfile() {
+    Get.to(
+      () => const ProfileScreen(),
+      transition: Transition.zoom,
+      duration: const Duration(milliseconds: 300),
+    );
+  }
+
+  // Ir a Configuracion 
+  void _goToSettings() {
+    Get.to(
+      () => const SettingsScreen(),
+      transition: Transition.zoom,
+      duration: const Duration(milliseconds: 300),
+    );
+  }
+
+  // ==================== MENÃš DESPLEGABLE DE PERFIL ====================
+  void _showProfileMenu(GlobalKey anchorKey) {
+    final auth = Get.find<AuthController>();
+    final nombre = auth.currentUser.value?['nombre'] as String? ?? 'Usuario';
+    final rol = _rolLabel(auth.currentRol.value);
+    final initials = _initials(nombre);
+
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    final box = anchorKey.currentContext?.findRenderObject() as RenderBox?;
+
+    RelativeRect position = const RelativeRect.fromLTRB(200, 500, 50, 50);
+    if (overlay != null && box != null) {
+      final rect = Rect.fromPoints(
+        box.localToGlobal(Offset.zero, ancestor: overlay),
+        box.localToGlobal(box.size.bottomRight(Offset.zero), ancestor: overlay),
+      );
+      position = RelativeRect.fromRect(rect, Offset.zero & overlay.size);
+    }
+
+    showMenu<String>(
+      context: context,
+      position: position,
+      items: [
+        PopupMenuItem<String>(
+          enabled: false,
+          child: ListTile(
+            leading: CircleAvatar(
+              radius: 20,
+              backgroundColor: AppTheme.accent.withValues(alpha: 0.1),
+              child: Text(initials,
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            title: Text(nombre),
+            subtitle: Text(rol),
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem<String>(
+          value: 'profile',
+          child: ListTile(
+            leading: Icon(Icons.person_outline),
+            title: Text("Ver Perfil"),
+          ),
+        ),
+        const PopupMenuItem<String>(
+          value: 'settings',
+          child: ListTile(
+            leading: Icon(Icons.settings_outlined),
+            title: Text("Configuración"),
+          ),
+        ),
+        const PopupMenuItem<String>(
+          value: 'password',
+          child: ListTile(
+            leading: Icon(Icons.lock_outline),
+            title: Text("Cambiar Contraseña"),
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem<String>(
+          value: 'logout',
+          child: ListTile(
+            leading: Icon(Icons.logout_rounded, color: AppTheme.danger),
+            title: Text(
+              "Cerrar Sesion",
+              style: TextStyle(color: AppTheme.danger),
+            ),
+          ),
+        ),
+      ],
+    ).then((value) {
+      if (!mounted) return;
+      if (value == null) return;
+
+      switch (value) {
+        case 'profile':
+          _goToProfile();
+          break;
+        case 'settings':
+          _goToSettings();
+          break;
+        case 'password':
+          AppSnackbar.info(context, "Funcion proximamente");
+          break;
+        case 'logout':
+          _logout();
+          break;
+      }
+      // showMenu ya cerró el menú: NO hacer Navigator.pop aquí.
+    });
+  }
+
+  Widget _buildInsightOrb(
+    BuildContext context, {
+    double size = 40,
+    bool pulsoSuave = false,
+  }) {
+    return Tooltip(
+      message: 'CUNITECH Insight',
+      child: ScaleTransition(
+        scale: pulsoSuave ? _softPulseAnimation : _pulseAnimation,
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [AppTheme.accent, Color(0xFF6B5339)],
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: AppTheme.accent.withValues(alpha: 0.45),
+                blurRadius: pulsoSuave ? 8 : 18,
+                spreadRadius: 1,
+              ),
+            ],
+          ),
+          child: Material(
+            color: Colors.transparent,
+            shape: const CircleBorder(),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: () => _showHolographicPanel(context),
+              child: Icon(
+                Icons.auto_awesome,
+                color: const Color(0xFFFDF6EC),
+                size: size * 0.47,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showHolographicPanel(BuildContext context) {
+    showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'CUNITECH Insight',
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      transitionDuration: const Duration(milliseconds: 250),
+      pageBuilder: (dialogContext, _, __) => const InsightPanelDialog(),
+    );
+  }
+
+  Widget _buildAnimatedScreen(
+    BuildContext context,
+    List<Map<String, dynamic>> items,
+    int index,
+  ) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 220),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      layoutBuilder: (currentChild, previousChildren) => Stack(
+        fit: StackFit.expand,
+        children: [
+          ...previousChildren,
+          if (currentChild != null) currentChild,
+        ],
+      ),
+      transitionBuilder: (child, animation) {
+        final curved = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        );
+        return FadeTransition(
+          opacity: curved,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0.02, 0),
+              end: Offset.zero,
+            ).animate(curved),
+            child: child,
+          ),
+        );
+      },
+      child: KeyedSubtree(
+        key: ValueKey(index),
+        child: items[index]['screen'] as Widget,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final authController = Get.find<AuthController>();
+    final theme = Theme.of(context);
+    final isMobile = ResponsiveBuildContext(context).isMobile;
+    final isTablet = ResponsiveBuildContext(context).isTablet;
+    final isDesktop = ResponsiveBuildContext(context).isDesktop;
+
+    return Obx(() {
+      final items = _visibleItems(authController);
+
+      if (items.isEmpty) {
+        return Scaffold(
+          backgroundColor: theme.scaffoldBackgroundColor,
+          body: Center(
+            child: authController.isLoading.value
+                ? const AppLoadingIndicator()
+                : const Text('No tienes acceso a ningun  módulo'),
+          ),
+        );
+      }
+
+      final index = _currentIndex < items.length ? _currentIndex : 0;
+      final nombre =
+          authController.currentUser.value?['nombre'] as String? ?? 'Usuario';
+      final rol = _rolLabel(authController.currentRol.value);
+      final initials = _initials(nombre);
+
+      return Scaffold(
+        key: _scaffoldKey,
+        backgroundColor: theme.scaffoldBackgroundColor,
+        drawer: (isMobile || isTablet)
+            ? Drawer(
+                child: _buildNavigationDrawer(
+                    context, items, index, nombre, rol, initials),
+              )
+            : null,
+        body: SafeArea(
+          top: !isDesktop,
+          bottom: false,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              !isDesktop
+                  ? Column(
+                      children: [
+                        _buildMobileTopBar(
+                          context,
+                          isTablet: isTablet,
+                          items: items,
+                          currentIndex: index,
+                        ),
+                        Expanded(
+                          child: _buildAnimatedScreen(context, items, index),
+                        ),
+                      ],
+                    )
+                  : Row(
+                  children: [
+                    // Sidebar
+                    Container(
+                      width: 250,
+                      decoration: BoxDecoration(
+                        color: theme.brightness == Brightness.dark
+                            ? const Color(0xFF151210)
+                            : const Color(0xFFFBF8F3),
+                        border: Border(
+                            right: BorderSide(
+                                color: _borderColor(context), width: 1)),
+                      ),
+                      child: Column(
+                        children: [
+                          // PARTE SUPERIOR - PERFIL DEL USUARIO
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(14, 20, 14, 12),
+                            child: Material(
+                              color: Colors.transparent,
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(16),
+                                onTap: _goToProfile,
+                                child: AnimatedContainer(
+                                  duration: const Duration(milliseconds: 200),
+                                  curve: Curves.easeOutCubic,
+                                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.accent.withValues(alpha: 0.08),
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      CircleAvatar(
+                                        radius: 24,
+                                        backgroundColor:
+                                            AppTheme.accent.withValues(alpha: 0.18),
+                                        child: Text(initials,
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.w700,
+                                                fontSize: 16,
+                                                color: AppTheme.accent)),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(nombre,
+                                                style: TextStyle(
+                                                    fontWeight: FontWeight.w700,
+                                                    fontSize: 14,
+                                                    color: _primaryTextColor(context))),
+                                            const SizedBox(height: 2),
+                                            Text(rol,
+                                                style: TextStyle(
+                                                    fontSize: 11,
+                                                    color: _secondaryTextColor(context))),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+
+                          // PARTE MEDIA - NAVEGACIóN AGRUPADA
+                          Expanded(
+                            child: ScrollConfiguration(
+                              behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+                              child: ListView(
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                                children: [
+                                  _buildSectionTitle(context, 'OPERACIONES'),
+                                  ..._buildGroupedNavItems(items, index, context, theme, startIndex: 0, count: 5),
+                                  if (Get.find<AuthController>().currentRol.value == 'admin') ...[
+                                    const SizedBox(height: 10),
+                                    _buildSectionTitle(context, 'ADMINISTRACIóN'),
+                                    ..._buildGroupedNavItems(items, index, context, theme, startIndex: 5, count: 2),
+                                  ],
+                                  const SizedBox(height: 10),
+                                  _buildSectionTitle(context, 'CUENTA'),
+                                  _buildAccountNavItem(
+                                    context,
+                                    icon: Icons.settings_outlined,
+                                    label: 'Configuracion',
+                                    onTap: _goToSettings,
+                                  ),
+                                  _buildAccountNavItem(
+                                    context,
+                                    icon: Icons.lock_reset_outlined,
+                                    label: 'Cambiar Contraseña',
+                                    onTap: () => AppSnackbar.info(context, 'Funcion proximamente'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+
+                          // PARTE INFERIOR - BOTóN CERRAR SESIóN
+                          Container(
+                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                            decoration: BoxDecoration(
+                              border: Border(
+                                  top: BorderSide(
+                                      color: _borderColor(context), width: 1)),
+                            ),
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: SizedBox(
+                              width: double.infinity,
+                              child: FilledButton.icon(
+                                onPressed: _logout,
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: const Color(0xFF6F4E37),
+                                  foregroundColor: Colors.white,
+                                  overlayColor: Colors.white.withValues(alpha: 0.12),
+                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                ),
+                                icon: const Icon(Icons.logout_rounded, size: 20),
+                                label: const Text(
+                                  'Cerrar Sesion',
+                                  style: TextStyle(fontWeight: FontWeight.w600),
+                                ),
+                              ),
+                            ),
+                          ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // Contenido principal
+                    Expanded(
+                      child: Container(
+                        color: theme.scaffoldBackgroundColor,
+                        child: Column(
+                          children: [
+                            // Top Bar
+                            Container(
+                              height: 72,
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 32),
+                              decoration: BoxDecoration(
+                                color: _surfaceColor(context),
+                                border: Border(
+                                    bottom: BorderSide(
+                                        color: _borderColor(context),
+                                        width: 1)),
+                              ),
+                              child: Row(
+                                children: [
+                                  Text(
+                                    items[index]['label'] as String,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .headlineMedium,
+                                  ),
+                                  const Spacer(),
+                                  // El orbe de Insight vive ahora en la barra
+                                  // superior: asi deja de tapar los botones de
+                                  // accion del final de las listas.
+                                  if (authController.isAdmin ||
+                                      authController.isVeterinario)
+                                    Padding(
+                                      padding: const EdgeInsets.only(right: 8),
+                                      child: _buildInsightOrb(
+                                        context,
+                                        size: 38,
+                                        pulsoSuave: true,
+                                      ),
+                                    ),
+                                  Builder(
+                                    builder: (buttonContext) {
+                                      return IconButton(
+                                        icon: Stack(
+                                          clipBehavior: Clip.none,
+                                          children: [
+                                            const Icon(Icons.notifications_outlined),
+                                            if (Get.isRegistered<NotificationController>())
+                                              Obx(() {
+                                                final count =
+                                                    Get.find<NotificationController>()
+                                                        .unreadCount
+                                                        .value;
+                                                if (count == 0) {
+                                                  return const SizedBox.shrink();
+                                                }
+                                                return Positioned(
+                                                  right: -4,
+                                                  top: -4,
+                                                  child: Container(
+                                                    padding: const EdgeInsets.all(4),
+                                                    decoration: const BoxDecoration(
+                                                      color: AppTheme.danger,
+                                                      shape: BoxShape.circle,
+                                                    ),
+                                                    constraints: const BoxConstraints(
+                                                        minWidth: 16, minHeight: 16),
+                                                    child: Text(
+                                                      count > 9 ? '9+' : '$count',
+                                                      style: const TextStyle(
+                                                          color: Colors.white,
+                                                          fontSize: 9,
+                                                          fontWeight: FontWeight.w700),
+                                                      textAlign: TextAlign.center,
+                                                    ),
+                                                  ),
+                                                );
+                                              }),
+                                          ],
+                                        ),
+                                        onPressed: () {
+                                          final RenderBox box =
+                                              buttonContext.findRenderObject()
+                                                  as RenderBox;
+                                          _showNotificationsPanel(context,
+                                              anchor: box);
+                                        },
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                    Expanded(
+                      child: _buildAnimatedScreen(context, items, index),
+                    ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+      );
+    });
+  }
+
+  Widget _buildNavigationDrawer(
+    BuildContext context,
+    List<Map<String, dynamic>> items,
+    int currentIndex,
+    String nombre,
+    String rol,
+    String initials,
+  ) {
+    final theme = Theme.of(context);
+    return Container(
+      // En pantallas muy angostas el drawer no debe ocupar todo el ancho.
+      width: MediaQuery.of(context).size.width < 320
+          ? MediaQuery.of(context).size.width * 0.85
+          : 280,
+      color: theme.brightness == Brightness.dark
+          ? const Color(0xFF151210)
+          : const Color(0xFFFBF8F3),
+      child: SafeArea(
+        child: Column(
+          children: [
+            // PARTE SUPERIOR - PERFIL DEL USUARIO
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 16, 14, 10),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(16),
+                  hoverColor: AppTheme.accent.withValues(alpha: 0.10),
+                  splashColor: AppTheme.accent.withValues(alpha: 0.12),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    _goToProfile();
+                  },
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeOutCubic,
+                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                    decoration: BoxDecoration(
+                      color: AppTheme.accent.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Row(
+                      children: [
+                        CircleAvatar(
+                          radius: 24,
+                          backgroundColor: AppTheme.accent.withValues(alpha: 0.18),
+                          child: Text(initials,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 16,
+                                  color: AppTheme.accent)),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(nombre,
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 14,
+                                      color: _primaryTextColor(context))),
+                              const SizedBox(height: 2),
+                              Text(rol,
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      color: _secondaryTextColor(context))),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            // PARTE MEDIA - NAVEGACIóN AGRUPADA
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                children: [
+                  _buildSectionTitle(context, 'OPERACIONES'),
+                  ..._buildGroupedNavItemsDrawer(items, currentIndex, context, theme,
+                      startIndex: 0, count: 5),
+                                if (Get.find<AuthController>().currentRol.value == 'admin') ...[
+                                  const SizedBox(height: 14),
+                                  _buildSectionTitle(context, 'ADMINISTRACIóN'),
+                                  ..._buildGroupedNavItemsDrawer(items, currentIndex, context, theme,
+                                      startIndex: 5, count: 2),
+                                ],
+                  const SizedBox(height: 14),
+                  _buildSectionTitle(context, 'CUENTA'),
+                  _buildAccountNavItemDrawer(
+                    context,
+                    icon: Icons.person_outline,
+                    label: 'Mi Perfil',
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      _goToProfile();
+                    },
+                  ),
+                  _buildAccountNavItemDrawer(
+                    context,
+                    icon: Icons.settings_outlined,
+                    label: 'Configuracion',
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      _goToSettings();
+                    },
+                  ),
+                  _buildAccountNavItemDrawer(
+                    context,
+                    icon: Icons.lock_reset_outlined,
+                    label: 'Cambiar Contraseña',
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      AppSnackbar.info(context, 'Funcipn proximamente');
+                    },
+                  ),
+                ],
+              ),
+            ),
+            // PARTE INFERIOR - BOTóN CERRAR SESIóN
+            Container(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+              decoration: BoxDecoration(
+                border: Border(
+                    top: BorderSide(color: _borderColor(context), width: 1)),
+              ),
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  _logout();
+                },
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF6F4E37),
+                  foregroundColor: Colors.white,
+                  overlayColor: Colors.white.withValues(alpha: 0.12),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                icon: const Icon(Icons.logout_rounded, size: 20),
+                label: const Text(
+                  'Cerrar Sesion',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+          ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildGroupedNavItemsDrawer(
+    List<Map<String, dynamic>> items,
+    int currentIndex,
+    BuildContext context,
+    ThemeData theme, {
+    required int startIndex,
+    required int count,
+  }) {
+    final widgets = <Widget>[];
+    for (int i = startIndex; i < startIndex + count && i < items.length; i++) {
+      final item = items[i];
+      final isSelected = currentIndex == i;
+      widgets.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              hoverColor: AppTheme.accent.withValues(alpha: 0.07),
+              splashColor: AppTheme.accent.withValues(alpha: 0.10),
+              onTap: () {
+                setState(() => _currentIndex = i);
+                Navigator.of(context).pop();
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOutCubic,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? AppTheme.accent.withValues(alpha: 0.12)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      item['icon'] as IconData,
+                      color: isSelected
+                          ? AppTheme.accent
+                          : _secondaryTextColor(context),
+                      size: 22,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        item['label'] as String,
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                          color: isSelected
+                              ? AppTheme.accent
+                              : _primaryTextColor(context),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return widgets;
+  }
+
+  Widget _buildAccountNavItemDrawer(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          hoverColor: AppTheme.accent.withValues(alpha: 0.07),
+          splashColor: AppTheme.accent.withValues(alpha: 0.10),
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  icon,
+                  color: _secondaryTextColor(context),
+                  size: 22,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                      color: _primaryTextColor(context),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMobileTopBar(
+    BuildContext context, {
+    required bool isTablet,
+    required List<Map<String, dynamic>> items,
+    required int currentIndex,
+  }) {
+    return Container(
+      height: isTablet ? 72 : 64,
+      padding: EdgeInsets.symmetric(horizontal: context.adaptivePaddingH),
+      decoration: BoxDecoration(
+        color: _surfaceColor(context),
+        border: Border(bottom: BorderSide(color: _borderColor(context))),
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: 'Abrir navegacion',
+            icon: const Icon(Icons.menu_rounded),
+            onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+          ),
+          Expanded(
+            child: Text(
+              items[currentIndex]['label'] as String,
+              style: Theme.of(context).textTheme.titleLarge,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          // El orbe de Insight va en la barra superior (junto a la campana)
+          // para no tapar los botones de accion del final de las listas.
+          if (Get.find<AuthController>().isAdmin ||
+              Get.find<AuthController>().isVeterinario)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: _buildInsightOrb(
+                context,
+                size: 32,
+                pulsoSuave: true,
+              ),
+            ),
+          IconButton(
+            tooltip: 'Notificaciones',
+            icon: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                const Icon(Icons.notifications_outlined),
+                if (Get.isRegistered<NotificationController>())
+                  Obx(() {
+                    final count =
+                        Get.find<NotificationController>().unreadCount.value;
+                    if (count == 0) return const SizedBox.shrink();
+                    return Positioned(
+                      right: -4,
+                      top: -4,
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: const BoxDecoration(
+                          color: AppTheme.danger,
+                          shape: BoxShape.circle,
+                        ),
+                        constraints:
+                            const BoxConstraints(minWidth: 16, minHeight: 16),
+                        child: Text(
+                          count > 9 ? '9+' : '$count',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    );
+                  }),
+              ],
+            ),
+            onPressed: () => _showNotificationsPanel(context),
+          ),
+          IconButton(
+            key: _mobileProfileKey,
+            tooltip: 'Perfil',
+            icon: const Icon(Icons.account_circle_outlined),
+            onPressed: () => _showProfileMenu(_mobileProfileKey),
+          ),
+        ],
+      ),
+    );
+  }
+}

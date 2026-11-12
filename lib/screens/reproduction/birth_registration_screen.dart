@@ -1,0 +1,288 @@
+import 'package:flutter/material.dart';
+import 'package:get/get.dart';
+import '../../models/birth.dart';
+import '../../models/mating.dart';
+import '../../controllers/birth_controller.dart';
+import '../../core/utils/app_snackbar.dart';
+
+class BirthRegistrationScreen extends StatefulWidget {
+  final Mating? mating; // Opcional: si viene desde una monta
+
+  const BirthRegistrationScreen({super.key, this.mating});
+
+  @override
+  State<BirthRegistrationScreen> createState() => _BirthRegistrationScreenState();
+}
+
+class _BirthRegistrationScreenState extends State<BirthRegistrationScreen> {
+  final _formKey = GlobalKey<FormState>();
+  late final BirthController _birthController;
+
+  late TextEditingController _motherController;
+  late TextEditingController _fatherController;
+  late TextEditingController _litterSizeController;
+  late TextEditingController _avgWeightController;
+  late TextEditingController _notesController;
+
+  DateTime _birthDate = DateTime.now();
+  int _liveKits = 0;
+  int _deadKits = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _birthController = Get.isRegistered<BirthController>()
+        ? Get.find<BirthController>()
+        : Get.put(BirthController());
+    _motherController = TextEditingController(text: widget.mating?.doeId ?? '');
+    _fatherController = TextEditingController(text: widget.mating?.buckId ?? '');
+    _litterSizeController = TextEditingController();
+    _avgWeightController = TextEditingController();
+    _notesController = TextEditingController();
+    _liveKits = widget.mating?.litterSize ?? 0;
+  }
+
+  @override
+  void dispose() {
+    _motherController.dispose();
+    _fatherController.dispose();
+    _litterSizeController.dispose();
+    _avgWeightController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Registro de Nacimientos"),
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+        foregroundColor: Theme.of(context).colorScheme.onSurface,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text("Datos del Parto", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 20),
+
+              TextFormField(
+                controller: _motherController,
+                decoration: const InputDecoration(labelText: "ID de la Coneja Madre *"),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) return "Obligatorio";
+                  return int.tryParse(value.trim()) == null
+                      ? "Ingresa un ID numérico"
+                      : null;
+                },
+              ),
+              const SizedBox(height: 16),
+
+              TextFormField(
+                controller: _fatherController,
+                decoration: const InputDecoration(labelText: "ID del Macho (Opcional)"),
+                validator: (value) => value != null &&
+                        value.trim().isNotEmpty &&
+                        int.tryParse(value.trim()) == null
+                    ? "Ingresa un ID numérico"
+                    : null,
+              ),
+              const SizedBox(height: 16),
+
+              // Fecha del parto
+              ListTile(
+                title: const Text("Fecha del Parto"),
+                subtitle: Text("${_birthDate.toLocal()}".split(' ')[0]),
+                trailing: const Icon(Icons.calendar_today),
+                onTap: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: _birthDate,
+                    firstDate: DateTime(2024),
+                    lastDate: DateTime.now().add(const Duration(days: 30)),
+                  );
+                  if (picked != null) setState(() => _birthDate = picked);
+                },
+              ),
+
+              const SizedBox(height: 16),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final totalField = TextFormField(
+                    controller: _litterSizeController,
+                    decoration:
+                        const InputDecoration(labelText: "Total Crías"),
+                    keyboardType: TextInputType.number,
+                    validator: (value) =>
+                        value!.isEmpty ? "Obligatorio" : null,
+                  );
+                  final weightField = TextFormField(
+                    controller: _avgWeightController,
+                    decoration: const InputDecoration(
+                      labelText: "Peso Promedio (g)",
+                    ),
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                  );
+                  if (constraints.maxWidth < 420) {
+                    return Column(
+                      children: [
+                        totalField,
+                        const SizedBox(height: 12),
+                        weightField,
+                      ],
+                    );
+                  }
+                  return Row(
+                    children: [
+                      Expanded(child: totalField),
+                      const SizedBox(width: 12),
+                      Expanded(child: weightField),
+                    ],
+                  );
+                },
+              ),
+
+              const SizedBox(height: 20),
+              const Text("Estado de las Crías", style: TextStyle(fontWeight: FontWeight.bold)),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final liveCounter = _buildCounter(
+                    "Vivas",
+                    _liveKits,
+                    (value) => setState(() => _liveKits = value),
+                  );
+                  final deadCounter = _buildCounter(
+                    "Muertas",
+                    _deadKits,
+                    (value) => setState(() => _deadKits = value),
+                  );
+                  if (constraints.maxWidth < 420) {
+                    return Column(
+                      children: [
+                        liveCounter,
+                        const SizedBox(height: 12),
+                        deadCounter,
+                      ],
+                    );
+                  }
+                  return Row(
+                    children: [
+                      Expanded(child: liveCounter),
+                      const SizedBox(width: 16),
+                      Expanded(child: deadCounter),
+                    ],
+                  );
+                },
+              ),
+
+              const SizedBox(height: 20),
+              TextFormField(
+                controller: _notesController,
+                decoration: const InputDecoration(
+                  labelText: "Observaciones",
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 3,
+              ),
+
+              const SizedBox(height: 40),
+              SizedBox(
+                width: double.infinity,
+                height: 56,
+                child: FilledButton(
+                  onPressed: _saveBirth,
+                  child: const Text("REGISTRAR NACIMIENTO", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCounter(String label, int value, Function(int) onChanged) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Text(label),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                  padding: EdgeInsets.zero,
+                  onPressed: value > 0 ? () => onChanged(value - 1) : null,
+                  icon: const Icon(Icons.remove),
+                ),
+                Text(value.toString(), style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                  padding: EdgeInsets.zero,
+                  onPressed: () => onChanged(value + 1),
+                  icon: const Icon(Icons.add),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _saveBirth() {
+    if (_formKey.currentState!.validate()) {
+      final litterSize = int.tryParse(_litterSizeController.text);
+      final averageWeight = double.tryParse(_avgWeightController.text);
+
+      if (litterSize == null || litterSize <= 0) {
+        AppSnackbar.error(
+          context,
+          'El total de crías debe ser mayor que cero',
+        );
+        return;
+      }
+      if (averageWeight == null || averageWeight < 0) {
+        AppSnackbar.error(
+          context,
+          'Ingresa un peso promedio válido',
+        );
+        return;
+      }
+      if (_liveKits + _deadKits > litterSize) {
+        AppSnackbar.error(
+          context,
+          'Las crías vivas y muertas no pueden superar el total',
+        );
+        return;
+      }
+
+      final newBirth = Birth(
+        id: '',
+        matingId: widget.mating?.id ?? "Manual",
+        motherId: int.parse(_motherController.text.trim()),
+        fatherId: _fatherController.text.trim().isEmpty
+          ? null
+          : int.parse(_fatherController.text.trim()),
+        birthDate: _birthDate,
+        litterSize: litterSize,
+        averageWeight: averageWeight,
+        liveKits: _liveKits,
+        deadKits: _deadKits,
+        notes: _notesController.text,
+      );
+
+      _birthController.createBirth(newBirth);
+    }
+  }
+}

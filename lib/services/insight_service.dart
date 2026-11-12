@@ -1,0 +1,224 @@
+// lib/services/insight_service.dart
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../core/utils/logger.dart';
+import '../models/insight_recomendacion.dart';
+
+/// Recolecta métricas reales del criadero y pide recomendaciones a la Edge
+/// Function `generate-insights` (Gemini). Ante cualquier error devuelve una
+/// lista vacía para que la UI no se rompa.
+class InsightService {
+  final _supabase = Supabase.instance.client;
+
+  /// Formato 'yyyy-MM-dd' para columnas tipo date.
+  static String _dateOnly(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+
+  /// Devuelve el panel de IA (diagnóstico + recomendaciones) del criadero.
+  Future<InsightPanel> obtenerRecomendaciones() async {
+    if (_supabase.auth.currentUser == null) return InsightPanel.empty;
+    try {
+      final contexto = await _construirContexto();
+      if (_supabase.auth.currentUser == null) return InsightPanel.empty;
+      final response = await _supabase.functions.invoke(
+        'generate-insights',
+        body: {'contexto': contexto},
+      );
+
+      if (response.status < 200 || response.status >= 300) {
+        logger.e('generate-insights respondió ${response.status}');
+        return InsightPanel.empty;
+      }
+
+      final data = response.data;
+      if (data is! Map) return InsightPanel.empty;
+      return InsightPanel.fromJson(data.cast<String, dynamic>());
+    } on FunctionException catch (e) {
+      if (e.status != 401) {
+        logger.e('Error obtenerRecomendaciones', error: e);
+      }
+      return InsightPanel.empty;
+    } catch (e) {
+      logger.e('Error obtenerRecomendaciones', error: e);
+      return InsightPanel.empty;
+    }
+  }
+
+  /// Recolecta las métricas del criadero. Cada consulta es tolerante a fallos:
+  /// si una tabla/columna no existe, el valor queda en 0.
+  Future<Map<String, dynamic>> _construirContexto() async {
+    if (_supabase.auth.currentUser == null) return {};
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final hace30 = today.subtract(const Duration(days: 30));
+    final en7 = today.add(const Duration(days: 7));
+
+    final totalConejos = await _contar(
+      _supabase.from('conejo').select('id_conejo'),
+    );
+    final conejasActivas = await _contar(
+      _supabase
+          .from('conejo')
+          .select('id_conejo')
+          .eq('genero', 'Hembra')
+          .inFilter('reproductive_status', [
+            'Vacía',
+            'Servida',
+            'Gestante',
+            'Lactante',
+          ])
+          .neq('estado', 'Vendida'),
+    );
+    final machos = await _contar(
+      _supabase
+          .from('conejo')
+          .select('id_conejo')
+          .eq('genero', 'Macho'),
+    );
+    final enTratamiento = await _contar(
+      _supabase
+          .from('conejo')
+          .select('id_conejo')
+          .ilike('estado', '%Tratamiento%'),
+    );
+    final partos30Dias = await _contar(
+      _supabase
+          .from('births')
+          .select('id')
+          .gte('birth_date', _dateOnly(hace30)),
+    );
+    final criasVivas = await _sumarCriasVivas();
+    final proximosPartos = await _contar(
+      _supabase
+          .from('conejo')
+          .select('id_conejo')
+          .eq('reproductive_status', 'Gestante')
+          .gte('expected_birth_date', _dateOnly(today))
+          .lte('expected_birth_date', _dateOnly(en7)),
+    );
+    final tratamientosProximos = await _contar(
+      _supabase
+          .from('tratamientos')
+          .select('id')
+          .gte('fecha_proxima', _dateOnly(today))
+          .lte('fecha_proxima', _dateOnly(en7)),
+    );
+
+    // Mortalidad e historial de partos: son los datos que la IA analiza
+    // para detectar tendencias y redactar el diagnóstico.
+    final partos = await _datosMortalidadYPartos(hace30);
+
+    return {
+      'fecha': _dateOnly(today),
+      'total_conejos': totalConejos,
+      'conejas_activas': conejasActivas,
+      'machos': machos,
+      'conejos_en_tratamiento': enTratamiento,
+      'partos_ultimos_30_dias': partos30Dias,
+      'crias_vivas_total': criasVivas,
+      'proximos_partos_7_dias': proximosPartos,
+      'tratamientos_proximos_7_dias': tratamientosProximos,
+      ...partos,
+    };
+  }
+
+  /// Mortalidad (%) e historial de camadas desde la fecha indicada.
+  ///
+  /// Devuelve tambien la lista de partos recientes para que la IA pueda
+  /// comparar camadas y ver la evolución.
+  Future<Map<String, dynamic>> _datosMortalidadYPartos(
+    DateTime desde,
+  ) async {
+    try {
+      final rows = await _supabase
+          .from('births')
+          .select(
+            'birth_date, live_kits, dead_kits, adopted_kits, litter_size, '
+            'average_weight',
+          )
+          .gte('birth_date', _dateOnly(desde))
+          .order('birth_date', ascending: false)
+          .limit(40);
+
+      return calcularMortalidad((rows as List).cast<Map<String, dynamic>>());
+    } catch (e) {
+      logger.w('No se pudieron leer los datos de mortalidad', error: e);
+      return calcularMortalidad(const []);
+    }
+  }
+
+  /// Indicadores de mortalidad y supervivencia a partir de los partos.
+  ///
+  /// `mortalidad_porcentaje` = muertas / (vivas + muertas).
+  static Map<String, dynamic> calcularMortalidad(
+    List<Map<String, dynamic>> partos,
+  ) {
+    var vivas = 0;
+    var muertas = 0;
+    var adoptadas = 0;
+    final historial = <Map<String, dynamic>>[];
+
+    for (final parto in partos) {
+      final v = (parto['live_kits'] as num?)?.toInt() ?? 0;
+      final m = (parto['dead_kits'] as num?)?.toInt() ?? 0;
+      final a = (parto['adopted_kits'] as num?)?.toInt() ?? 0;
+      vivas += v;
+      muertas += m;
+      adoptadas += a;
+
+      historial.add({
+        'fecha': parto['birth_date'],
+        'camada': (parto['litter_size'] as num?)?.toInt() ?? (v + m),
+        'vivos': v,
+        'muertos': m,
+        'adoptados': a,
+        'peso_promedio_kg': (parto['average_weight'] as num?)?.toDouble(),
+      });
+    }
+
+    final nacidas = vivas + muertas;
+    return {
+      'mortalidad_porcentaje': nacidas > 0
+          ? double.parse(((muertas / nacidas) * 100).toStringAsFixed(1))
+          : 0.0,
+      'supervivencia_porcentaje': nacidas > 0
+          ? double.parse(((vivas / nacidas) * 100).toStringAsFixed(1))
+          : 0.0,
+      'crias_vivas_30_dias': vivas,
+      'crias_muertas_30_dias': muertas,
+      'crias_adoptadas_30_dias': adoptadas,
+      'camadas_30_dias': partos.length,
+      'historial_partos': historial.take(12).toList(),
+    };
+  }
+
+  /// Cuenta las filas de una consulta; 0 si falla.
+  Future<int> _contar(Future<dynamic> query) async {
+    try {
+      final rows = await query;
+      return rows is List ? rows.length : 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  /// Suma `live_kits` de los partos recientes (últimos 100); 0 si falla.
+  Future<int> _sumarCriasVivas() async {
+    try {
+      final rows = await _supabase
+          .from('births')
+          .select('live_kits')
+          .order('birth_date', ascending: false)
+          .limit(100);
+      return rows.fold<int>(
+        0,
+        (sum, r) => sum + ((r['live_kits'] as num?)?.toInt() ?? 0),
+      );
+    } catch (e) {
+      return 0;
+    }
+  }
+}
