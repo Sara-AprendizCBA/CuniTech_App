@@ -31,7 +31,7 @@ https://github.com/Sara-AprendizCBA/CuniTech_App.git
 Para obtener el código completo y funcional de la aplicación, clone directamente la rama `develop`:
 ```bash
 git clone -b develop https://github.com/Sara-AprendizCBA/CuniTech_App.git
-cd CuniTech
+cd CuniTech_App
 ```
 
 ### Paso 2: Instalar dependencias de Flutter
