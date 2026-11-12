@@ -1,0 +1,581 @@
+import 'package:flutter/material.dart';
+import 'package:get/get.dart';
+import '../../core/theme/app_theme.dart';
+import '../../core/utils/dialog_animations.dart';
+import '../../core/utils/responsive.dart';
+import '../../core/utils/app_snackbar.dart';
+import '../../core/widgets/animated_list_item.dart';
+import '../../core/widgets/app_card.dart';
+import '../../core/widgets/app_loading.dart';
+import '../../core/widgets/empty_state.dart';
+import '../../core/widgets/pressable_scale.dart';
+import '../../services/csv_export_service.dart';
+import '../../models/rabbit.dart';
+import '../../controllers/rabbit_controller.dart';
+import '../../controllers/auth_controller.dart';
+import 'rabbit_form_dialog.dart';
+import 'rabbit_detail_screen.dart';
+
+class RabbitsScreen extends StatefulWidget {
+  const RabbitsScreen({super.key});
+
+  @override
+  State<RabbitsScreen> createState() => _RabbitsScreenState();
+}
+
+class _RabbitsScreenState extends State<RabbitsScreen> {
+  late final RabbitController rabbitController;
+  final AuthController authController = Get.find<AuthController>();
+  late TextEditingController _searchController;
+  bool _exportando = false;
+
+  @override
+  void initState() {
+    super.initState();
+    rabbitController = Get.isRegistered<RabbitController>()
+        ? Get.find<RabbitController>()
+        : Get.put(RabbitController());
+    _searchController = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  /// Exporta a CSV la lista de conejos que se esta viendo (con los filtros
+  /// aplicados).
+  Future<void> _exportarCsv() async {
+    if (_exportando) return;
+
+    final conejos = rabbitController.conejosFiltrados;
+    if (conejos.isEmpty) {
+      AppSnackbar.info(context, 'No hay conejos para exportar');
+      return;
+    }
+
+    setState(() => _exportando = true);
+    try {
+      final exportados = await CsvExportService.exportarConejos(conejos);
+      if (!mounted) return;
+      final filtrado = rabbitController.hayFiltrosActivos ||
+          _searchController.text.isNotEmpty;
+      AppSnackbar.success(
+        context,
+        'CSV generado con $exportados conejos'
+        '${filtrado ? ' (filtro aplicado)' : ''}',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      AppSnackbar.error(context, 'Error al exportar el CSV');
+    } finally {
+      if (mounted) setState(() => _exportando = false);
+    }
+  }
+
+  /// Boton de exportacion a CSV (compacto en celular).
+  Widget _exportButton({required bool isMobile}) {
+    final theme = Theme.of(context);
+    final icono = _exportando
+        ? const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : const Icon(Icons.download_rounded, size: 18);
+
+    if (isMobile) {
+      return IconButton(
+        tooltip: 'Exportar CSV',
+        onPressed: _exportando ? null : _exportarCsv,
+        icon: icono,
+        style: IconButton.styleFrom(
+          backgroundColor: theme.colorScheme.surface,
+          foregroundColor: AppTheme.accent,
+          side: BorderSide(color: theme.colorScheme.outlineVariant),
+        ),
+      );
+    }
+
+    return OutlinedButton.icon(
+      onPressed: _exportando ? null : _exportarCsv,
+      icon: icono,
+      label: const Text('Exportar CSV'),
+    );
+  }
+
+  // CREATE (rabbit == null) y UPDATE (rabbit != null)
+  void _showRabbitForm({Rabbit? rabbit}) {
+    showScaleDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => RabbitFormDialog(rabbit: rabbit),
+    );
+  }
+
+  Widget _searchField() {
+    return TextField(
+      controller: _searchController,
+      decoration: InputDecoration(
+        hintText: 'Buscar conejo...',
+        prefixIcon: const Icon(Icons.search),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppTheme.radiusMd),
+        ),
+      ),
+      onChanged: (value) => rabbitController.busqueda.value = value,
+    );
+  }
+
+  /// Desplegable compacto de filtro (estado / genero).
+  Widget _filtroSelect({
+    required List<String> opciones,
+    required String valor,
+    required IconData icono,
+    required ValueChanged<String> onChanged,
+  }) {
+    final theme = Theme.of(context);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(AppTheme.radiusMd),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: valor,
+          isDense: true,
+          isExpanded: true,
+          icon: Icon(icono, size: 16, color: theme.colorScheme.onSurfaceVariant),
+          borderRadius: BorderRadius.circular(AppTheme.radiusMd),
+          style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurface),
+          items: [
+            for (final opcion in opciones)
+              DropdownMenuItem(value: opcion, child: Text(opcion)),
+          ],
+          onChanged: (nuevo) {
+            if (nuevo != null) onChanged(nuevo);
+          },
+        ),
+      ),
+    );
+  }
+
+  /// Filtros de estado y genero (se aplican sobre la lista en memoria).
+  Widget _buildFiltros() {
+    return Row(
+      children: [
+        Expanded(
+          child: _filtroSelect(
+            opciones: RabbitController.estadosFiltro,
+            valor: rabbitController.filtroEstado.value,
+            icono: Icons.health_and_safety_outlined,
+            onChanged: (v) => rabbitController.filtroEstado.value = v,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: _filtroSelect(
+            opciones: RabbitController.generosFiltro,
+            valor: rabbitController.filtroGenero.value,
+            icono: Icons.pets_outlined,
+            onChanged: (v) => rabbitController.filtroGenero.value = v,
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isTablet = ResponsiveBuildContext(context).isTablet;
+
+    return Scaffold(
+      backgroundColor: AppTheme.bgLight,
+      floatingActionButton: context.isMobile && authController.isAdmin
+          ? FloatingActionButton(
+              tooltip: 'Agregar conejo',
+              onPressed: () => _showRabbitForm(),
+              backgroundColor: AppTheme.accent,
+              foregroundColor: Colors.white,
+              child: const Icon(Icons.add_rounded),
+            )
+          : null,
+      body: Column(
+        children: [
+          // Header: buscador + botones
+          Padding(
+            padding: EdgeInsets.fromLTRB(
+              context.isMobile ? 16 : (isTablet ? 24 : 32),
+              context.isMobile ? 16 : (isTablet ? 20 : 24),
+              context.isMobile ? 16 : (isTablet ? 24 : 32),
+              context.isMobile ? 12 : 16,
+            ),
+            child: context.isMobile
+                ? Column(
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(child: _searchField()),
+                          const SizedBox(width: 8),
+                          _exportButton(isMobile: true),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      _buildFiltros(),
+                    ],
+                  )
+                : Row(
+                    children: [
+                      Expanded(child: _searchField()),
+                      const SizedBox(width: 12),
+                      SizedBox(
+                        width: 180,
+                        child: _filtroSelect(
+                          opciones: RabbitController.estadosFiltro,
+                          valor: rabbitController.filtroEstado.value,
+                          icono: Icons.health_and_safety_outlined,
+                          onChanged: (v) =>
+                              rabbitController.filtroEstado.value = v,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      SizedBox(
+                        width: 150,
+                        child: _filtroSelect(
+                          opciones: RabbitController.generosFiltro,
+                          valor: rabbitController.filtroGenero.value,
+                          icono: Icons.pets_outlined,
+                          onChanged: (v) =>
+                              rabbitController.filtroGenero.value = v,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      _exportButton(isMobile: false),
+                      if (authController.isAdmin) ...[
+                        const SizedBox(width: 12),
+                        PressableScale(
+                          child: FilledButton.icon(
+                            onPressed: () => _showRabbitForm(),
+                            icon: const Icon(Icons.add_rounded),
+                            label: const Text('Nuevo Conejo'),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+          ),
+
+          // READ: lista de conejos
+          Expanded(
+            child: Obx(() {
+              if (rabbitController.isLoading.value &&
+                  rabbitController.rabbits.isEmpty) {
+                return const AppLoadingIndicator(
+                  label: 'Cargando conejos…',
+                );
+              }
+
+              final rabbits = rabbitController.conejosFiltrados;
+              final hayFiltros = rabbitController.hayFiltrosActivos ||
+                  _searchController.text.isNotEmpty;
+
+              if (rabbits.isEmpty) {
+                return RefreshIndicator(
+                  onRefresh: rabbitController.loadAllRabbits,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      return SingleChildScrollView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            minHeight: constraints.maxHeight,
+                          ),
+                          child: Center(
+                            child: _EmptyRabbitsState(
+                              isSearching: hayFiltros,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                );
+              }
+
+              return RefreshIndicator(
+                onRefresh: rabbitController.loadAllRabbits,
+                child: ListView.builder(
+                  padding: EdgeInsets.fromLTRB(
+                    context.isMobile ? 16 : (isTablet ? 24 : 32),
+                    0,
+                    context.isMobile ? 16 : (isTablet ? 24 : 32),
+                    // Hueco inferior en celular para que el orbe flotante
+                    // no tape el ultimo conejo de la lista.
+                    context.isMobile ? 100 : 0,
+                  ),
+                  itemCount: rabbits.length,
+                  itemBuilder: (context, index) {
+                    final rabbit = rabbits[index];
+                    return AnimatedListItem(
+                      index: index,
+                      child: _RabbitCard(
+                        rabbit: rabbit,
+                        onTap: () => Get.to(
+                          () => RabbitDetailScreen(rabbit: rabbit),
+                          transition: Transition.zoom,
+                          duration: const Duration(milliseconds: 300),
+                        ),
+                        onEdit: () => _showRabbitForm(rabbit: rabbit),
+                        onDelete: () => _showDeleteDialog(rabbit),
+                        canManage: authController.isAdmin,
+                      ),
+                    );
+                  },
+                ),
+              );
+            }),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // DELETE con confirmación
+  void _showDeleteDialog(Rabbit rabbit) {
+    Get.dialog(
+      AlertDialog(
+        title: const Text('Eliminar conejo'),
+        content: Text('¿Deseas eliminar a ${rabbit.displayId}?'),
+        actions: [
+          TextButton(
+            onPressed: () => Get.back(),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Get.back();
+              final ok = await rabbitController.deleteRabbit(rabbit.id);
+              if (!mounted) return;
+              if (ok) {
+                AppSnackbar.success(context, 'Conejo eliminado');
+              } else {
+                AppSnackbar.error(
+                  context,
+                  'No se puede eliminar: tiene registros relacionados',
+                );
+              }
+            },
+            child: const Text(
+              'Eliminar',
+              style: TextStyle(color: AppTheme.danger),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RabbitCard extends StatelessWidget {
+  final Rabbit rabbit;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+  final VoidCallback onEdit;
+  final bool canManage;
+
+  const _RabbitCard({
+    required this.rabbit,
+    required this.onTap,
+    required this.onDelete,
+    required this.onEdit,
+    this.canManage = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final photoUrl = rabbit.photoUrl;
+    final genderIcon = Icon(
+      rabbit.gender == 'Macho' ? Icons.male : Icons.female,
+      size: 28,
+      color: AppTheme.accent,
+    );
+
+    return AppCard(
+      margin: EdgeInsets.only(bottom: context.isMobile ? 12 : 16),
+      onTap: onTap,
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 32,
+            backgroundColor: AppTheme.accent.withValues(alpha: 0.1),
+            child: photoUrl != null && photoUrl.isNotEmpty
+                ? ClipOval(
+                    child: Image.network(
+                      photoUrl,
+                      width: 64,
+                      height: 64,
+                      fit: BoxFit.cover,
+                      cacheWidth: 128,
+                      cacheHeight: 128,
+                      errorBuilder: (_, __, ___) => genderIcon,
+                    ),
+                  )
+                : genderIcon,
+          ),
+          SizedBox(
+            width: context.isMobile
+                ? 12
+                : (ResponsiveBuildContext(context).isTablet ? 20 : 24),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(
+                      rabbit.displayId,
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    _HealthBadge(status: rabbit.healthStatus),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  rabbit.breed,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 6,
+                  children: [
+                    _InfoChip(
+                      icon: Icons.cake_rounded,
+                      label: '${rabbit.ageMonths} meses',
+                    ),
+                    if (rabbit.weightKg > 0)
+                      _InfoChip(
+                        icon: Icons.monitor_weight_outlined,
+                        label: '${rabbit.weightKg} kg',
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          // Menú de tres puntos (onSelected, NO onTap)
+          if (canManage)
+            PopupMenuButton<String>(
+              onSelected: (value) {
+                if (value == 'edit') onEdit();
+                if (value == 'delete') onDelete();
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'edit',
+                  child: Row(
+                    children: [
+                      Icon(Icons.edit),
+                      SizedBox(width: 8),
+                      Text('Editar'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'delete',
+                  child: Row(
+                    children: [
+                      Icon(Icons.delete, color: AppTheme.danger),
+                      SizedBox(width: 8),
+                      Text(
+                        'Eliminar',
+                        style: TextStyle(color: AppTheme.danger),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HealthBadge extends StatelessWidget {
+  final String status;
+
+  const _HealthBadge({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isHealthy = status.toLowerCase() == 'saludable';
+    final color = isHealthy ? AppTheme.success : AppTheme.warning;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        status,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: color,
+        ),
+      ),
+    );
+  }
+}
+
+class _InfoChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _InfoChip({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 16, color: AppTheme.textSecondary),
+        const SizedBox(width: 6),
+        Text(label, style: Theme.of(context).textTheme.bodyMedium),
+      ],
+    );
+  }
+}
+
+class _EmptyRabbitsState extends StatelessWidget {
+  final bool isSearching;
+
+  const _EmptyRabbitsState({required this.isSearching});
+
+  @override
+  Widget build(BuildContext context) {
+    return EmptyStateWidget(
+      icon: isSearching
+          ? Icons.search_off_rounded
+          : Icons.cruelty_free_rounded,
+      title: isSearching
+          ? 'No se encontraron resultados'
+          : 'Aún no hay conejos registrados',
+      subtitle: isSearching
+          ? 'Prueba con otro término de búsqueda o cambia los filtros.'
+          : 'Los conejos que registres aparecerán aquí.',
+    );
+  }
+}
